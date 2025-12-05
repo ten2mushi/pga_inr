@@ -1,0 +1,84 @@
+[tool.poetry]
+name = "pga-inr"
+version = "0.1.0"
+description = "Projective Geometric Algebra Implicit Neural Representations - Coordinate-free learning of 3D shapes"
+readme = "README.md"
+license = "MIT"
+authors = ["PGA-INR Contributors"]
+keywords = [
+    "geometric-algebra",
+    "neural-radiance-fields",
+    "implicit-neural-representations",
+    "3d-reconstruction",
+    "deep-learning",
+    "pytorch",
+    "computer-vision"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+packages = [{include = "pga_inr"}]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.14"
+torch = ">=2.0.0"
+numpy = ">=1.24.0"
+trimesh = ">=4.0.0"
+matplotlib = ">=3.7.0"
+tqdm = ">=4.65.0"
+scipy = ">=1.14.0"
+imageio = ">=2.31.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0.0"
+pytest-cov = ">=4.0.0"
+black = ">=23.0.0"
+isort = ">=5.12.0"
+mypy = ">=1.0.0"
+ruff = ">=0.1.0"
+
+[tool.poetry.group.docs.dependencies]
+sphinx = ">=6.0.0"
+sphinx-rtd-theme = ">=1.2.0"
+myst-parser = ">=1.0.0"
+
+[tool.poetry.urls]
+Homepage = "https://github.com/pga-inr/pga-inr"
+Documentation = "https://pga-inr.readthedocs.io"
+Repository = "https://github.com/pga-inr/pga-inr"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"

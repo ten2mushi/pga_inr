@@ -1,0 +1,19 @@
+# Core dependencies
+torch>=2.0.0
+numpy>=1.24.0
+scipy>=1.11.0
+
+# Mesh processing
+trimesh>=4.0.0
+
+# Visualization
+matplotlib>=3.7.0
+imageio>=2.31.0
+
+# Progress bars
+tqdm>=4.65.0
+
+# Development (optional)
+# pytest>=7.0.0
+# black>=23.0.0
+# mypy>=1.0.0

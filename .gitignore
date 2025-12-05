@@ -1,0 +1,123 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.ply
+*.obj
+*.stl
+*.off
+checkpoints/
+logs/
+outputs/
+wandb/
+*.pth
+*.pt
+
+# Example outputs
+0*_*.png
+0*_*.gif
+!09_composition_static.png
+!09_dynamic_scene.gif
+
+# Ignored example scripts
+examples/01_basic_inr.py
+examples/02_train_sdf.py
+examples/03_generative_shapes.py
+examples/04_scene_composition.py
+examples/05_sphere_tracing_render.py
+examples/06_articulated_model.py
+examples/07_real_world_deformation.py
+
+
+EXAMPLE_09_WALKTHROUGH.md
+APPLICATIONS.md
+MODEL_DOCS.md
+README_V2.md
+
