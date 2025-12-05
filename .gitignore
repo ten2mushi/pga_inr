@@ -115,9 +115,11 @@ examples/05_sphere_tracing_render.py
 examples/06_articulated_model.py
 examples/07_real_world_deformation.py
 
-
+brief.md
 EXAMPLE_09_WALKTHROUGH.md
 APPLICATIONS.md
 MODEL_DOCS.md
 README_V2.md
+
+poetry.lock
 

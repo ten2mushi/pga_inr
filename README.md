@@ -53,3 +53,10 @@ poetry install
 * **Math:** `quaternion_multiply`, `quaternion_slerp`, `matrix_to_quaternion`
 * **Vis:** `plot_sdf_slice`, `render_turntable`
 * **Config:** `Config`, `load_config`
+
+
+## Dynamic Scene Composition Example
+
+This GIF demonstrates how multiple trained primitive shapes (Sphere, Box, Cylinder) can be dynamically composed and animated at runtime. Each object moves according to its own trajectory (orbit, rotation, translation), and their SDFs are blended using a "smooth union" operation, showcasing the library's ability to handle complex, interactive scenes without retraining.
+
+![Dynamic Scene Composition](09_dynamic_scene.gif)
