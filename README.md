@@ -11,7 +11,7 @@ By embedding geometric priors directly into the network architecture, this libra
 
 ## neural animation
 
-In example 10, a neural SDF is trained on the canonical T-pose mesh, then animated using skeleton-driven deformation. The comparison shows the original mesh (top) vs the neural reconstruction (bottom) from front, side, and top views.
+In example 10, a neural SDF is trained on the canonical T-pose mesh, then animated using skeleton-driven deformation. The comparison shows the original mesh (top) vs the neural reconstruction (bottom).
 
 ![Articulated Character Animation](output/10_comparison_multiview.gif)
 
