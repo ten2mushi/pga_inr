@@ -188,8 +188,8 @@ def demo_composition(models, device):
     plot_sdf_slice(smooth_scene, resolution=100, ax=axes[2], title="Smooth Union (Melting)", device=device)
     
     plt.tight_layout()
-    plt.savefig("09_composition_static.png")
-    print("Saved 09_composition_static.png")
+    plt.savefig("@output/09_composition_static.png")
+    print("Saved @output/09_composition_static.png")
     # plt.show() # Uncomment to show interactive window
 
 def demo_dynamic_animation(models, device):
@@ -262,12 +262,12 @@ def demo_dynamic_animation(models, device):
             print(f"  Rendered frame {i}")
             
     # Save GIF
-    save_path = "09_dynamic_scene.gif"
+    save_path = "@output/09_dynamic_scene.gif"
     try:
         save_animation_gif(frames, save_path, fps=15)
-        print(f"Saved animation to {save_path}")
+        print(f"Saved animation to @output/{save_path}")
     except ImportError:
-        print("Could not save GIF (imageio not installed).")
+        print("Could not save GIF (imageio not installed) to @output/09_dynamic_scene.gif.")
 
 def main():
     device = torch.device('mps' if torch.mps.is_available() else 'cpu')

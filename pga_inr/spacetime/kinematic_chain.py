@@ -522,15 +522,19 @@ class DualQuaternionSkinning(nn.Module):
         return torch.stack(dqs)
 
     def _dual_quaternion_inverse(self, dq: torch.Tensor) -> torch.Tensor:
-        """Compute inverse of dual quaternion."""
+        """Compute inverse of unit dual quaternion.
+
+        For unit dual quaternion dq = q_r + ε*q_d, the inverse is the conjugate:
+        dq^(-1) = q_r* + ε*q_d* (conjugate both parts)
+        """
         from ..utils.quaternion import quaternion_conjugate
 
         q_r = dq[:4]
         q_d = dq[4:]
 
-        # Inverse: conjugate real part, negate dual part
+        # For unit dual quaternion, inverse = conjugate of both parts
         q_r_inv = quaternion_conjugate(q_r.unsqueeze(0)).squeeze(0)
-        q_d_inv = -quaternion_conjugate(q_d.unsqueeze(0)).squeeze(0)
+        q_d_inv = quaternion_conjugate(q_d.unsqueeze(0)).squeeze(0)
 
         return torch.cat([q_r_inv, q_d_inv])
 

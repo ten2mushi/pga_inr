@@ -1,7 +1,8 @@
 """
 Data loading and processing for PGA-INR.
 
-Includes SDF dataset classes, point sampling strategies, and mesh utilities.
+Includes SDF dataset classes, point sampling strategies, mesh utilities,
+and FBX loading for rigged characters.
 """
 
 from .datasets import (
@@ -38,6 +39,24 @@ from .mesh_utils import (
     sdf_to_mesh,
     compute_mesh_metrics,
 )
+from .fbx_loader import (
+    load_rigged_mesh,
+    load_animation,
+    load_rigged_character,
+    MeshData,
+    SkeletonData,
+    SkinningData,
+    AnimationData,
+    FBXLoadError,
+    FBXMeshError,
+    FBXSkeletonError,
+    FBXAnimationError,
+)
+from .rigged_dataset import (
+    CanonicalMeshDataset,
+    RiggedMeshDataset,
+    AnimatedMeshDataset,
+)
 
 __all__ = [
     # Datasets
@@ -71,4 +90,20 @@ __all__ = [
     "sample_near_surface",
     "sdf_to_mesh",
     "compute_mesh_metrics",
+    # FBX loading
+    "load_rigged_mesh",
+    "load_animation",
+    "load_rigged_character",
+    "MeshData",
+    "SkeletonData",
+    "SkinningData",
+    "AnimationData",
+    "FBXLoadError",
+    "FBXMeshError",
+    "FBXSkeletonError",
+    "FBXAnimationError",
+    # Rigged datasets
+    "CanonicalMeshDataset",
+    "RiggedMeshDataset",
+    "AnimatedMeshDataset",
 ]

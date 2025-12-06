@@ -98,7 +98,8 @@ def normalize_mesh(
 def compute_sdf(
     mesh: Mesh,
     points: np.ndarray,
-    use_winding_number: bool = True
+    use_winding_number: bool = True,
+    batch_size: int = 5000
 ) -> np.ndarray:
     """
     Compute signed distance field values for query points.
@@ -107,12 +108,36 @@ def compute_sdf(
         mesh: Reference mesh
         points: Query points (N, 3)
         use_winding_number: Use winding number for sign (more robust)
+        batch_size: Process points in batches to limit memory usage
 
     Returns:
         SDF values (N,)
     """
     import trimesh
 
+    n_points = len(points)
+
+    # For small point sets, process all at once
+    if n_points <= batch_size:
+        return _compute_sdf_batch(mesh, points, use_winding_number)
+
+    # For large point sets, process in batches to limit memory
+    sdf_values = np.zeros(n_points, dtype=np.float32)
+
+    for start in range(0, n_points, batch_size):
+        end = min(start + batch_size, n_points)
+        batch_points = points[start:end]
+        sdf_values[start:end] = _compute_sdf_batch(mesh, batch_points, use_winding_number)
+
+    return sdf_values
+
+
+def _compute_sdf_batch(
+    mesh: Mesh,
+    points: np.ndarray,
+    use_winding_number: bool = True
+) -> np.ndarray:
+    """Compute SDF for a single batch of points."""
     # Compute unsigned distances
     closest_points, distances, triangle_ids = mesh.nearest.on_surface(points)
 
@@ -599,3 +624,65 @@ def transform_mesh(
         mesh.vertices += translation
 
     return mesh
+
+
+def transfer_skinning_weights(
+    source_vertices: np.ndarray,
+    target_vertices: np.ndarray,
+    source_weights: np.ndarray,
+    source_indices: np.ndarray,
+    k_nearest: int = 4
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Transfer skinning weights from source mesh to target mesh.
+
+    Uses K-nearest neighbors with distance-weighted interpolation to
+    transfer bone weights from the source mesh vertices to the target
+    mesh vertices.
+
+    Args:
+        source_vertices: Source mesh vertices (V_src, 3)
+        target_vertices: Target mesh vertices (V_tgt, 3)
+        source_weights: Skinning weights for source (V_src, max_bones)
+        source_indices: Bone indices for source (V_src, max_bones)
+        k_nearest: Number of nearest neighbors to use
+
+    Returns:
+        target_weights: Interpolated weights (V_tgt, max_bones)
+        target_indices: Bone indices (V_tgt, max_bones)
+    """
+    from scipy.spatial import cKDTree
+
+    # Build KD-tree for source vertices
+    tree = cKDTree(source_vertices)
+
+    # Find K nearest neighbors for each target vertex
+    distances, indices = tree.query(target_vertices, k=k_nearest)
+
+    # Handle case where k_nearest=1
+    if k_nearest == 1:
+        distances = distances.reshape(-1, 1)
+        indices = indices.reshape(-1, 1)
+
+    # Distance-weighted interpolation
+    # Add small epsilon to avoid division by zero
+    inv_distances = 1.0 / (distances + 1e-8)
+    interp_weights = inv_distances / inv_distances.sum(axis=1, keepdims=True)
+
+    # Interpolate skinning weights
+    max_bones = source_weights.shape[1]
+    target_weights = np.zeros((len(target_vertices), max_bones), dtype=np.float32)
+
+    for i in range(k_nearest):
+        neighbor_weights = source_weights[indices[:, i]]
+        target_weights += interp_weights[:, i:i+1] * neighbor_weights
+
+    # Re-normalize weights to sum to 1
+    weight_sums = target_weights.sum(axis=1, keepdims=True)
+    weight_sums = np.maximum(weight_sums, 1e-8)
+    target_weights = target_weights / weight_sums
+
+    # For bone indices, use the nearest vertex's indices
+    target_indices = source_indices[indices[:, 0]].copy()
+
+    return target_weights, target_indices
