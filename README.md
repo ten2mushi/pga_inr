@@ -15,7 +15,7 @@ In example 10, a neural SDF is trained on the canonical T-pose mesh, then animat
 
 ![Articulated Character Animation](output/10_comparison_multiview.gif)
 
-## dynamic scene Composition
+## dynamic scene composition
 
 Example 9 demonstrates how multiple trained primitive shapes (Sphere, Box, Cylinder) can be dynamically composed and animated at runtime. Each object moves according to its own trajectory (orbit, rotation, translation), and their SDFs are blended using a "smooth union" operation, showcasing the library's ability to handle interactive scenes without retraining.
 
