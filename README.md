@@ -1,3 +1,6 @@
+![Articulated Character Animation](output/10_comparison_multiview.gif)
+
+
 Observer-independent implicit neural representations using projective geometric algebra -> coordinate free neural fields.
 
 By embedding geometric priors directly into the network architecture, this library enables the learning of neural fields that are mathematically guaranteed to be invariant to rigid body transformations. Instead of learning a function of absolute coordinates $f(x,y,z)$, it learns a function of relative geometric configurations using PGA Motors.
@@ -6,6 +9,7 @@ By embedding geometric priors directly into the network architecture, this libra
 - PGA motors: All rigid body motions (translations + rotations) are handled uniformly using the even subalgebra of $\mathbb{R}_{3,0,1}$.
 - Geometric regularization: Loss functions enforce physical laws (Eikonal constraint, Normal alignment) in the local frame, ensuring valid geometry regardless of orientation.
 - Spacetime Dynamics: Extends static geometry to 4D with temporal motors and kinematic chains for articulated motion.
+
 
 ## Installation
 
@@ -54,8 +58,13 @@ poetry install
 * **Vis:** `plot_sdf_slice`, `render_turntable`
 * **Config:** `Config`, `load_config`
 
+## neural animation
 
-## Dynamic Scene Composition Example
+A neural SDF is trained on the canonical T-pose mesh, then animated using skeleton-driven deformation. The comparison shows the original mesh (top) vs the neural reconstruction (bottom) from front, side, and top views.
+
+![Articulated Character Animation](output/10_comparison_multiview.gif)
+
+## dynamic scene Composition
 
 This GIF demonstrates how multiple trained primitive shapes (Sphere, Box, Cylinder) can be dynamically composed and animated at runtime. Each object moves according to its own trajectory (orbit, rotation, translation), and their SDFs are blended using a "smooth union" operation, showcasing the library's ability to handle complex, interactive scenes without retraining.
 

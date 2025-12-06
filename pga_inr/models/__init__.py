@@ -7,7 +7,7 @@ PGA-INR and Generative PGA-INR architectures.
 
 from .layers import SineLayer, SirenMLP, PGAMotorLayer, HyperLayer, HyperNetwork
 from .encoders import FourierEncoder, PositionalEncoder
-from .inr import PGA_INR, PGA_INR_SDF, PGA_INR_NeRF, compose_scenes
+from .inr import PGA_INR, PGA_INR_SDF, PGA_INR_SDF_V2, PGA_INR_NeRF, compose_scenes
 from .generative import Generative_PGA_INR, Generative_PGA_INR_SDF, LatentCodeBank
 
 __all__ = [
@@ -23,6 +23,7 @@ __all__ = [
     # Models
     "PGA_INR",
     "PGA_INR_SDF",
+    "PGA_INR_SDF_V2",
     "PGA_INR_NeRF",
     "Generative_PGA_INR",
     "Generative_PGA_INR_SDF",

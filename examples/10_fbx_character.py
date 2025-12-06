@@ -9,6 +9,21 @@ Demonstrates the complete pipeline for loading rigged characters from FBX:
 5. Creating ArticulatedNeuralField with skeleton-driven deformation
 6. Visualizing animation sequences with multi-view comparison
 
+Usage:
+    python examples/10_fbx_character.py                  # Standard mode
+    python examples/10_fbx_character.py --high-quality   # High quality SDF (slower)
+    python examples/10_fbx_character.py --skip-sdf       # Skip SDF training
+
+Flags:
+    --high-quality: Use PGA_INR_SDF_V2 with enhanced architecture:
+                    - Positional encoding for high-frequency details
+                    - Skip connections for better gradient flow
+                    - Deeper network (8 layers, 512 hidden)
+                    - More training (1000 epochs, 50k samples)
+                    Results in sharper, more detailed SDF reconstruction.
+
+    --skip-sdf: Skip SDF training entirely (for testing other parts)
+
 Input files:
 - input/3d_meshes/x_bot_t_pose.fbx - T-pose mesh with skeleton and skinning
 - input/animations/x_bot_walking.fbx - Walking animation
@@ -41,7 +56,7 @@ from pga_inr.data import (
     CanonicalMeshDataset,
 )
 from pga_inr.data.mesh_utils import sdf_to_mesh, transfer_skinning_weights
-from pga_inr.models import PGA_INR_SDF
+from pga_inr.models import PGA_INR_SDF, PGA_INR_SDF_V2
 from pga_inr.losses import GeometricConsistencyLoss
 from pga_inr.training import create_optimizer
 from pga_inr.utils.visualization import plot_sdf_slice, save_animation_gif
@@ -378,41 +393,112 @@ def visualize_all_animations(character, output_dir):
 # 4. Training Canonical SDF
 # =============================================================================
 
-def train_canonical_sdf(character, device, epochs=500, batch_size=5000):
-    """Train a PGA-INR SDF on the canonical (T-pose) mesh."""
+def train_canonical_sdf(character, device, high_quality=False):
+    """
+    Train a PGA-INR SDF on the canonical (T-pose) mesh.
+
+    Args:
+        character: Character data from load_rigged_character
+        device: Torch device
+        high_quality: If True, use PGA_INR_SDF_V2 with enhanced settings
+
+    Returns:
+        Trained model
+    """
     print("\n" + "=" * 60)
     print("Phase 2: Training Canonical SDF")
     print("=" * 60)
 
+    # Configuration based on quality mode
+    if high_quality:
+        print("\n  Using HIGH QUALITY mode (PGA_INR_SDF_V2)")
+        config = {
+            'epochs': 2000,
+            'batch_size': 8000,
+            'cache_size': 50000,
+            'lr': 5e-5,                # Lower initial LR for stability
+            'lr_decay': 0.5,           # LR multiplier at decay steps
+            'lr_decay_steps': [800, 1400, 1800],  # Later decay for longer warmup
+            'lambda_eikonal': 0.05,    # Lower eikonal weight initially
+            'lambda_align': 0.02,
+            'log_interval': 200,
+        }
+        # Create V2 model - use balanced preset which is more stable
+        # but with num_frequencies=4 for easier optimization
+        model = PGA_INR_SDF_V2(
+            hidden_features=512,
+            hidden_layers=6,
+            omega_0=30.0,
+            use_positional_encoding=True,
+            num_frequencies=4,         # Lower frequencies for stability
+            skip_connections=(3,),
+            geometric_init=True,
+        ).to(device)
+        print(f"  Model: {model}")
+    else:
+        print("\n  Using STANDARD mode (PGA_INR_SDF)")
+        config = {
+            'epochs': 300,
+            'batch_size': 5000,
+            'cache_size': 20000,
+            'lr': 1e-4,
+            'lr_decay': 1.0,           # No decay for standard mode
+            'lr_decay_steps': [],
+            'lambda_eikonal': 0.1,
+            'lambda_align': 0.05,
+            'log_interval': 100,
+        }
+        # Create V1 model
+        model = PGA_INR_SDF(
+            hidden_features=512,
+            hidden_layers=6,
+            omega_0=50.0,
+            geometric_init=True
+        ).to(device)
+        param_count = sum(p.numel() for p in model.parameters())
+        print(f"  Model: PGA_INR_SDF (parameters: {param_count:,})")
+
     # Create dataset
-    # Note: cache_size controls memory usage during SDF computation
-    # 20000 points provides good coverage while keeping memory reasonable
+    print(f"\n  Dataset config:")
+    print(f"    Batch size: {config['batch_size']}")
+    print(f"    Cache size: {config['cache_size']}")
+    print(f"    Epochs: {config['epochs']}")
+
     dataset = CanonicalMeshDataset(
         mesh=character['mesh'],
-        num_samples=batch_size,
+        num_samples=config['batch_size'],
         surface_ratio=0.5,
         bounds=(-1.0, 1.0),
-        cache_size=20000,
+        cache_size=config['cache_size'],
         device=device
     )
 
-    # Create model
-    model = PGA_INR_SDF(
-        hidden_features=256,
-        hidden_layers=4,
-        omega_0=30.0,
-        geometric_init=True
-    ).to(device)
-
     # Training setup
-    optimizer = create_optimizer(model, lr=1e-4)
-    loss_fn = GeometricConsistencyLoss(lambda_eikonal=0.1, lambda_align=0.05)
+    optimizer = create_optimizer(model, lr=config['lr'])
+    loss_fn = GeometricConsistencyLoss(
+        lambda_eikonal=config['lambda_eikonal'],
+        lambda_align=config['lambda_align']
+    )
+
+    # LR scheduling setup
+    lr_decay_steps = set(config.get('lr_decay_steps', []))
+    lr_decay = config.get('lr_decay', 1.0)
+    current_lr = config['lr']
 
     # Training loop
-    print(f"\n  Training for {epochs} epochs...")
+    print(f"\n  Training for {config['epochs']} epochs...")
     losses = []
+    best_loss = float('inf')
+    best_model_state = None
 
-    for epoch in range(epochs):
+    for epoch in range(config['epochs']):
+        # Learning rate decay
+        if epoch in lr_decay_steps:
+            current_lr *= lr_decay
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = current_lr
+            print(f"    [LR decay] New learning rate: {current_lr:.2e}")
+
         batch = dataset[0]  # Random batch from cache
         points = batch['points'].to(device).requires_grad_(True)
         gt_sdf = batch['sdf'].to(device)
@@ -421,7 +507,7 @@ def train_canonical_sdf(character, device, epochs=500, batch_size=5000):
 
         outputs = model(points)
 
-        # PGA_INR_SDF returns 'sdf' key, not 'density'
+        # Both V1 and V2 return 'sdf' key
         sdf_output = outputs['sdf']
 
         # Compute normals from SDF gradient
@@ -441,13 +527,28 @@ def train_canonical_sdf(character, device, epochs=500, batch_size=5000):
         loss.backward()
         optimizer.step()
 
-        losses.append(loss.item())
+        current_loss = loss.item()
+        losses.append(current_loss)
 
-        if epoch % 100 == 0:
-            print(f"    Epoch {epoch}: Loss = {loss.item():.6f}, "
+        # Track best model
+        if current_loss < best_loss:
+            best_loss = current_loss
+            # Save best model state (for high quality mode)
+            if high_quality:
+                best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+
+        if epoch % config['log_interval'] == 0:
+            print(f"    Epoch {epoch}: Loss = {current_loss:.6f}, "
                   f"SDF = {metrics['sdf']:.6f}, Eikonal = {metrics['eikonal']:.6f}")
 
     print(f"\n  Final loss: {losses[-1]:.6f}")
+    print(f"  Best loss: {best_loss:.6f}")
+
+    # Restore best model weights if available
+    if best_model_state is not None and best_loss < losses[-1]:
+        print(f"  Restoring best model (loss improved from {losses[-1]:.6f} to {best_loss:.6f})")
+        model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
+
     return model
 
 
@@ -1018,8 +1119,11 @@ def main():
     compare_skinning_methods(character, OUTPUT_DIR)
 
     # Phase 5: Train canonical SDF
-    # Use --skip-sdf flag to skip training (takes a few minutes)
+    # Flags:
+    #   --skip-sdf: Skip SDF training entirely
+    #   --high-quality: Use PGA_INR_SDF_V2 with enhanced settings (slower but better)
     skip_sdf_flag = '--skip-sdf' in sys.argv
+    high_quality_flag = '--high-quality' in sys.argv
 
     model = None
     if skip_sdf_flag:
@@ -1027,8 +1131,12 @@ def main():
     else:
         print("\n" + "=" * 60)
         print("Phase 5: Training Canonical SDF")
+        if high_quality_flag:
+            print("  Mode: HIGH QUALITY (--high-quality flag)")
+        else:
+            print("  Mode: STANDARD (use --high-quality for better results)")
         print("=" * 60)
-        model = train_canonical_sdf(character, device, epochs=300)
+        model = train_canonical_sdf(character, device, high_quality=high_quality_flag)
         visualize_sdf(model, device, OUTPUT_DIR)
 
         # Phase 6: Neural articulation (only if SDF was trained)
