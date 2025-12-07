@@ -116,7 +116,9 @@ class LipschitzRegularization(nn.Module):
         )[0]
 
         # Gradient norm as proxy for Lipschitz constant
-        grad_norm = grad.norm(p=2, dim=-1)
+        # Clamp for numerical stability (min prevents division by zero in downstream ops,
+        # max prevents extremely large gradients from dominating the loss)
+        grad_norm = grad.norm(p=2, dim=-1).clamp(min=1e-12, max=100.0)
 
         # Penalize exceeding target Lipschitz constant
         loss = torch.relu(grad_norm - self.target_lipschitz) ** 2
@@ -133,7 +135,8 @@ class SmoothnessRegularization(nn.Module):
     """
     Encourages smooth outputs by penalizing high-frequency variations.
 
-    Uses finite differences between nearby points.
+    Uses the Laplacian (sum of second derivatives) as a smoothness measure.
+    This penalizes high curvature in the output field.
     """
 
     def __init__(self, reduction: str = 'mean'):
@@ -143,35 +146,21 @@ class SmoothnessRegularization(nn.Module):
     def forward(
         self,
         outputs: torch.Tensor,
-        coords: torch.Tensor,
-        epsilon: float = 0.01
+        coords: torch.Tensor
     ) -> torch.Tensor:
         """
-        Compute smoothness loss using finite differences.
+        Compute smoothness loss using Laplacian regularization.
 
         Args:
             outputs: Network outputs at coords (B, N, out_dim)
-            coords: Sample coordinates (B, N, 3)
-            epsilon: Perturbation distance
+            coords: Sample coordinates (B, N, 3), must have requires_grad=True
 
         Returns:
-            Smoothness loss
+            Smoothness loss (penalizes high curvature / second derivatives)
         """
         B, N, D = coords.shape
 
-        # Generate random perturbation directions
-        dirs = torch.randn(B, N, D, device=coords.device)
-        dirs = dirs / dirs.norm(dim=-1, keepdim=True)
-
-        # Perturbed coordinates
-        coords_plus = coords + epsilon * dirs
-        coords_minus = coords - epsilon * dirs
-
-        # This would require forward passes through the network
-        # For now, we use the Laplacian as a proxy
-        # Loss = ||∇²f|| (second derivative magnitude)
-
-        # Compute gradient
+        # Compute first-order gradient
         grad = torch.autograd.grad(
             outputs=outputs.sum(),
             inputs=coords,
@@ -179,8 +168,9 @@ class SmoothnessRegularization(nn.Module):
             retain_graph=True
         )[0]
 
-        # Compute Laplacian (sum of second derivatives)
-        laplacian = 0
+        # Compute Laplacian (sum of squared second derivatives)
+        # This penalizes high curvature in the field
+        laplacian_sq = torch.zeros(B, N, device=coords.device, dtype=coords.dtype)
         for i in range(D):
             grad_i = grad[..., i]
             grad2_i = torch.autograd.grad(
@@ -189,9 +179,9 @@ class SmoothnessRegularization(nn.Module):
                 create_graph=True,
                 retain_graph=True
             )[0][..., i]
-            laplacian = laplacian + grad2_i ** 2
+            laplacian_sq = laplacian_sq + grad2_i ** 2
 
-        loss = laplacian
+        loss = laplacian_sq
 
         if self.reduction == 'mean':
             return loss.mean()

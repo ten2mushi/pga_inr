@@ -48,6 +48,9 @@ GRADE_2_MASK = [IDX_E01, IDX_E02, IDX_E03, IDX_E12, IDX_E31, IDX_E23]
 GRADE_3_MASK = [IDX_E012, IDX_E031, IDX_E023, IDX_E123]
 GRADE_4_MASK = [IDX_E0123]
 
+# All grade masks as a list for iteration
+GRADE_MASKS = [GRADE_0_MASK, GRADE_1_MASK, GRADE_2_MASK, GRADE_3_MASK, GRADE_4_MASK]
+
 # Reversion sign table: grade k has sign (-1)^(k*(k-1)/2)
 # Grade 0: +1, Grade 1: +1, Grade 2: -1, Grade 3: -1, Grade 4: +1
 REVERSION_SIGNS = torch.tensor([
@@ -470,7 +473,7 @@ def geometric_product(a: Multivector, b: Multivector) -> Multivector:
     """
     Compute the geometric product a * b.
 
-    Uses the Cayley table for efficient computation.
+    Uses the Cayley table for efficient computation with vectorized scatter_add.
     """
     # Move Cayley tables to correct device
     signs = CAYLEY_SIGNS.to(a.device)
@@ -483,18 +486,20 @@ def geometric_product(a: Multivector, b: Multivector) -> Multivector:
     # Compute all pairwise products: (..., 16, 16)
     products = a_expanded * b_expanded * signs
 
-    # Accumulate into result components using scatter_add
+    # Accumulate into result components using vectorized scatter_add_
     batch_shape = a.mv.shape[:-1]
-    result = torch.zeros(*batch_shape, 16, device=a.device, dtype=a.dtype)
+    batch_size = a.mv[..., 0].numel()
 
-    # Flatten for scatter
-    flat_products = products.reshape(-1, 16, 16)
-    flat_result = result.reshape(-1, 16)
+    # Flatten for scatter: (batch_size, 256)
+    flat_products = products.reshape(batch_size, 256)
 
-    for i in range(16):
-        for j in range(16):
-            k = indices[i, j].item()
-            flat_result[:, k] += flat_products[:, i, j]
+    # Prepare indices for scatter_add_: expand to match batch dimension
+    # indices is (16, 16), flatten to (256,), expand to (batch_size, 256)
+    flat_indices = indices.reshape(256).unsqueeze(0).expand(batch_size, -1)
+
+    # Create result and scatter_add
+    flat_result = torch.zeros(batch_size, 16, device=a.device, dtype=a.dtype)
+    flat_result.scatter_add_(1, flat_indices, flat_products)
 
     return Multivector(flat_result.reshape(*batch_shape, 16))
 
@@ -504,26 +509,127 @@ def outer_product(a: Multivector, b: Multivector) -> Multivector:
     Compute the outer (wedge) product a ∧ b.
 
     The outer product extracts the grade-raising part of the geometric product.
-    For grade-r and grade-s elements: (a ∧ b) has grade r + s.
-    """
-    result = geometric_product(a, b)
+    For a grade-r element and grade-s element, the result has grade r + s.
 
-    # Zero out components that don't match the expected grade
-    # This is a simplified implementation - full version would
-    # compute grade combinations explicitly
-    return result  # TODO: Implement proper grade filtering
+    Properties:
+        - Antisymmetric: a ∧ b = (-1)^(rs) b ∧ a
+        - Associative: (a ∧ b) ∧ c = a ∧ (b ∧ c)
+        - a ∧ a = 0 for vectors
+
+    Args:
+        a: First multivector operand.
+        b: Second multivector operand.
+
+    Returns:
+        The outer product containing only grade (r+s) components.
+    """
+    # Initialize result tensor
+    result = torch.zeros_like(a.mv)
+
+    # For each combination of grades in a and b, compute the product
+    # and keep only the components with grade = grade_a + grade_b
+    for grade_a in range(5):
+        # Extract grade_a part of a
+        a_grade_mask = GRADE_MASKS[grade_a]
+        a_grade_values = a.mv[..., a_grade_mask]
+
+        # Skip if this grade has no non-zero components
+        if not torch.any(a_grade_values.abs() > 1e-12):
+            continue
+
+        for grade_b in range(5):
+            target_grade = grade_a + grade_b
+
+            # Skip if target grade exceeds maximum (4)
+            if target_grade > 4:
+                continue
+
+            # Extract grade_b part of b
+            b_grade_mask = GRADE_MASKS[grade_b]
+            b_grade_values = b.mv[..., b_grade_mask]
+
+            # Skip if this grade has no non-zero components
+            if not torch.any(b_grade_values.abs() > 1e-12):
+                continue
+
+            # Create grade-filtered multivectors
+            a_k = a.grade(grade_a)
+            b_k = b.grade(grade_b)
+
+            # Compute geometric product of these pure-grade elements
+            partial_product = geometric_product(a_k, b_k)
+
+            # Extract only the target grade from the result
+            target_mask = GRADE_MASKS[target_grade]
+            result[..., target_mask] = result[..., target_mask] + partial_product.mv[..., target_mask]
+
+    return Multivector(result)
 
 
 def inner_product(a: Multivector, b: Multivector) -> Multivector:
     """
-    Compute the inner (dot/left contraction) product a ⌋ b.
+    Compute the inner (left contraction) product a ⌋ b.
 
-    For grade-r and grade-s elements with r <= s:
-    (a ⌋ b) has grade |s - r|.
+    The left contraction extracts the grade-lowering part of the geometric product.
+    For a grade-r element and grade-s element with r <= s, the result has grade s - r.
+    If r > s, the result is zero.
+
+    This implements the left contraction (⌋), which is the most common
+    inner product in geometric algebra applications.
+
+    Properties:
+        - a ⌋ b measures how much a is "contained in" b
+        - For vectors: a ⌋ b = a · b (scalar product) when grade(a) = grade(b) = 1
+        - Useful for projections and contractions
+
+    Args:
+        a: First multivector operand (the "contractor").
+        b: Second multivector operand (being contracted).
+
+    Returns:
+        The left contraction containing only grade (s-r) components where r <= s.
     """
-    result = geometric_product(a, b)
-    # TODO: Implement proper grade filtering for inner product
-    return result
+    # Initialize result tensor
+    result = torch.zeros_like(a.mv)
+
+    # For each combination of grades in a and b, compute the product
+    # and keep only the components with grade = |grade_b - grade_a| when grade_a <= grade_b
+    for grade_a in range(5):
+        # Extract grade_a part of a
+        a_grade_mask = GRADE_MASKS[grade_a]
+        a_grade_values = a.mv[..., a_grade_mask]
+
+        # Skip if this grade has no non-zero components
+        if not torch.any(a_grade_values.abs() > 1e-12):
+            continue
+
+        for grade_b in range(5):
+            # Left contraction requires grade_a <= grade_b
+            if grade_a > grade_b:
+                continue
+
+            target_grade = grade_b - grade_a
+
+            # Extract grade_b part of b
+            b_grade_mask = GRADE_MASKS[grade_b]
+            b_grade_values = b.mv[..., b_grade_mask]
+
+            # Skip if this grade has no non-zero components
+            if not torch.any(b_grade_values.abs() > 1e-12):
+                continue
+
+            # Create grade-filtered multivectors
+            a_k = a.grade(grade_a)
+            b_k = b.grade(grade_b)
+
+            # Compute geometric product of these pure-grade elements
+            partial_product = geometric_product(a_k, b_k)
+
+            # Extract only the target grade from the result
+            target_mask = GRADE_MASKS[target_grade]
+            result[..., target_mask] = result[..., target_mask] + partial_product.mv[..., target_mask]
+
+    return Multivector(result)
 
 
 def regressive_product(a: Multivector, b: Multivector) -> Multivector:

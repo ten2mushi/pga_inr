@@ -12,57 +12,8 @@ from typing import List, Tuple, Optional
 import torch
 import torch.nn.functional as F
 
-
-def quaternion_slerp(
-    q0: torch.Tensor,
-    q1: torch.Tensor,
-    t: torch.Tensor
-) -> torch.Tensor:
-    """
-    Spherical linear interpolation for quaternions.
-
-    Args:
-        q0: Start quaternion [w, x, y, z] (..., 4)
-        q1: End quaternion [w, x, y, z] (..., 4)
-        t: Interpolation parameter (...) or scalar in [0, 1]
-
-    Returns:
-        Interpolated quaternion (..., 4)
-    """
-    # Normalize
-    q0 = F.normalize(q0, dim=-1)
-    q1 = F.normalize(q1, dim=-1)
-
-    # Compute dot product
-    dot = (q0 * q1).sum(dim=-1, keepdim=True)
-
-    # If dot < 0, negate one quaternion (shortest path)
-    q1 = torch.where(dot < 0, -q1, q1)
-    dot = torch.abs(dot)
-
-    # Clamp for numerical stability
-    dot = dot.clamp(-1 + 1e-6, 1 - 1e-6)
-
-    # Compute angle
-    theta = torch.acos(dot)
-
-    # Handle t dimensions
-    if t.dim() == 0:
-        t = t.unsqueeze(0)
-    while t.dim() < q0.dim():
-        t = t.unsqueeze(-1)
-
-    # SLERP formula
-    sin_theta = torch.sin(theta)
-    s0 = torch.sin((1 - t) * theta) / sin_theta
-    s1 = torch.sin(t * theta) / sin_theta
-
-    # Handle near-parallel case (use linear interpolation)
-    near_parallel = theta.abs() < 1e-6
-    s0 = torch.where(near_parallel, 1 - t, s0)
-    s1 = torch.where(near_parallel, t, s1)
-
-    return F.normalize(s0 * q0 + s1 * q1, dim=-1)
+# Import canonical SLERP from utils to avoid code duplication
+from ..utils.quaternion import quaternion_slerp
 
 
 def motor_slerp(

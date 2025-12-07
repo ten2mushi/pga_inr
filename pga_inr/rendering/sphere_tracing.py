@@ -123,7 +123,10 @@ class PGASphereTracer:
         latent_code: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Perform sphere tracing.
+        Perform sphere tracing with ray masking for efficiency.
+
+        Only evaluates the SDF for active (non-converged) rays, providing
+        significant speedup when many rays converge early or miss the object.
 
         Args:
             origins: Ray origins (N, 3)
@@ -142,36 +145,52 @@ class PGASphereTracer:
 
         # Initialize
         depths = torch.full((N,), self.near, device=device)
-        mask = torch.ones(N, dtype=torch.bool, device=device)
+        active = torch.ones(N, dtype=torch.bool, device=device)  # Rays still being traced
+        converged = torch.zeros(N, dtype=torch.bool, device=device)  # Rays that hit surface
 
         for step in range(self.max_steps):
-            # Only process active rays
-            if not mask.any():
+            # Early exit when all rays have terminated
+            if not active.any():
                 break
 
-            # Current points
-            points = origins + depths.unsqueeze(-1) * directions
+            # Get indices of active rays
+            active_indices = torch.where(active)[0]
 
-            # Query SDF
+            # Current points for active rays only
+            active_origins = origins[active_indices]
+            active_directions = directions[active_indices]
+            active_depths = depths[active_indices]
+            points_active = active_origins + active_depths.unsqueeze(-1) * active_directions
+
+            # Query SDF only for active rays
             if latent_code is not None:
-                outputs = self.model(points.unsqueeze(0), object_pose, latent_code)
+                outputs = self.model(points_active.unsqueeze(0), object_pose, latent_code)
             else:
-                outputs = self.model(points.unsqueeze(0), object_pose)
+                outputs = self.model(points_active.unsqueeze(0), object_pose)
 
             sdf = outputs.get('sdf', outputs.get('density')).squeeze(0).squeeze(-1)
 
-            # Update depths with SDF values
-            depths = depths + self.step_scale * sdf
+            # Update depths for active rays
+            # Use absolute value to ensure we always step forward along the ray
+            new_depths = active_depths + self.step_scale * torch.abs(sdf)
+            depths[active_indices] = new_depths
 
-            # Check for intersection (SDF < epsilon)
+            # Check for intersection (SDF < epsilon) among active rays
             hit = sdf.abs() < self.epsilon
-            mask = mask & ~hit & (depths < self.far) & (depths > self.near)
+            # Check for out of bounds
+            out_of_bounds = (new_depths >= self.far) | (new_depths <= self.near)
+
+            # Update converged status - rays that hit the surface
+            converged[active_indices[hit]] = True
+
+            # Deactivate rays that hit or went out of bounds
+            active[active_indices] = ~(hit | out_of_bounds)
 
         # Final points
         points = origins + depths.unsqueeze(-1) * directions
 
         # Valid intersections: converged and within bounds
-        valid = (depths < self.far) & (depths > self.near)
+        valid = converged & (depths < self.far) & (depths > self.near)
 
         return points, valid, depths
 

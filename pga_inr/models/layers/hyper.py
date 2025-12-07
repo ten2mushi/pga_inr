@@ -354,10 +354,10 @@ class WeightNormalizedHyperNetwork(HyperNetwork):
     ):
         super().__init__(latent_dim, target_shapes, hidden_dim)
 
-        # Add magnitude predictors
+        # Add magnitude predictors (one scalar magnitude per output neuron)
         self.magnitude_generators = nn.ModuleList()
         for fan_in, fan_out in target_shapes:
-            self.magnitude_generators.append(nn.Linear(hidden_dim, out_dim))
+            self.magnitude_generators.append(nn.Linear(hidden_dim, fan_out))
 
     def forward(
         self,

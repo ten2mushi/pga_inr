@@ -1,7 +1,7 @@
 """
 Training utilities for PGA-INR.
 
-Includes training loops, schedulers, and logging.
+Includes training loops, schedulers, curriculum learning, and logging.
 """
 
 from .trainer import PGAINRTrainer, GenerativePGAINRTrainer, create_optimizer
@@ -15,6 +15,13 @@ from .schedulers import (
     OneCycleLR,
     LatentCodeScheduler,
     create_scheduler,
+)
+from .curriculum import (
+    AdaptiveTrainingSampler,
+    CurriculumScheduler,
+    LossWeightScheduler,
+    DifficultyEstimator,
+    ProgressiveTrainingConfig,
 )
 
 __all__ = [
@@ -30,4 +37,10 @@ __all__ = [
     "OneCycleLR",
     "LatentCodeScheduler",
     "create_scheduler",
+    # Curriculum learning
+    "AdaptiveTrainingSampler",
+    "CurriculumScheduler",
+    "LossWeightScheduler",
+    "DifficultyEstimator",
+    "ProgressiveTrainingConfig",
 ]

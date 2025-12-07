@@ -101,10 +101,12 @@ wandb/
 *.pt
 
 # Example outputs
-0*_*.png
-0*_*.gif
-!09_composition_static.png
-!09_dynamic_scene.gif
+# 0*_*.png
+# 0*_*.gif
+# !09_composition_static.png
+# !09_dynamic_scene.gif
+01_*.png
+01_*.gif
 
 # Ignored example scripts
 examples/01_basic_inr.py
@@ -114,6 +116,9 @@ examples/04_scene_composition.py
 examples/05_sphere_tracing_render.py
 examples/06_articulated_model.py
 examples/07_real_world_deformation.py
+examples/15_fm_tracking.py
+examples/15_neural_skeletal_animation.py
+examples/01_weight_space_manipulation.py
 
 brief.md
 EXAMPLE_09_WALKTHROUGH.md
@@ -121,7 +126,18 @@ APPLICATIONS.md
 MODEL_DOCS.md
 README_V2.md
 feasibility_study.md
+notes/EXAMPLE_10_V2_WALKTHROUGH.md
+
+input/slam/fm_dataset
+reference/
+examples/old/
+output/old/
+output/15_neural_animation/
+output/slam/
+input/
+scripts/
 
 poetry.lock
 
 docs/
+notes/

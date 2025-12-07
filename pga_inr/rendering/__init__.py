@@ -25,6 +25,12 @@ from .shading import (
     normal_to_color,
     depth_to_color,
 )
+from .diff_mesh import (
+    DifferentiableMarchingCubes,
+    MeshSupervisedLoss,
+    SurfaceSampler,
+    MeshQualityLoss,
+)
 
 __all__ = [
     # Ray generation
@@ -49,4 +55,9 @@ __all__ = [
     "pbr_shading",
     "normal_to_color",
     "depth_to_color",
+    # Differentiable mesh
+    "DifferentiableMarchingCubes",
+    "MeshSupervisedLoss",
+    "SurfaceSampler",
+    "MeshQualityLoss",
 ]

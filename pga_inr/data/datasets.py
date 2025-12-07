@@ -108,7 +108,8 @@ class SDFDatasetFromMesh(Dataset):
         bounds: Tuple[float, float] = (-1.0, 1.0),
         normalize: bool = True,
         cache_samples: bool = True,
-        cache_size: int = 100000
+        cache_size: int = 100000,
+        virtual_length: int = 1000
     ):
         """
         Args:
@@ -119,6 +120,8 @@ class SDFDatasetFromMesh(Dataset):
             normalize: Whether to normalize mesh to unit cube
             cache_samples: Whether to cache precomputed samples
             cache_size: Size of sample cache
+            virtual_length: Length to report for dynamic sampling mode
+                           (when cache_samples=False)
         """
         from . import mesh_utils
 
@@ -127,6 +130,7 @@ class SDFDatasetFromMesh(Dataset):
         self.surface_ratio = surface_ratio
         self.bounds = bounds
         self.cache_samples = cache_samples
+        self.virtual_length = virtual_length
 
         # Load and process mesh
         self.mesh = mesh_utils.load_mesh(str(mesh_path))
@@ -167,7 +171,7 @@ class SDFDatasetFromMesh(Dataset):
     def __len__(self) -> int:
         if self.cache_samples:
             return len(self.cached_points) // self.num_samples
-        return 1000  # Virtual length for dynamic sampling
+        return self.virtual_length  # Configurable virtual length for dynamic sampling
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         if self.cache_samples:

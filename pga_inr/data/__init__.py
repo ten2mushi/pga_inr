@@ -24,6 +24,9 @@ from .sampling import (
     NearSurfaceSampler,
     AdaptiveSampler,
     HierarchicalSampler,
+    CurriculumImportanceSampler,
+    NewtonProjectionSampler,
+    ErrorDrivenSampler,
     sample_on_sphere,
     sample_in_sphere,
     sample_rays,
@@ -57,6 +60,10 @@ from .rigged_dataset import (
     RiggedMeshDataset,
     AnimatedMeshDataset,
 )
+from .fm_loader import (
+    FMDatasetLoader,
+    FMDatasetSequenceIterator,
+)
 
 __all__ = [
     # Datasets
@@ -77,6 +84,9 @@ __all__ = [
     "NearSurfaceSampler",
     "AdaptiveSampler",
     "HierarchicalSampler",
+    "CurriculumImportanceSampler",
+    "NewtonProjectionSampler",
+    "ErrorDrivenSampler",
     "sample_on_sphere",
     "sample_in_sphere",
     "sample_rays",
@@ -106,4 +116,7 @@ __all__ = [
     "CanonicalMeshDataset",
     "RiggedMeshDataset",
     "AnimatedMeshDataset",
+    # SLAM datasets
+    "FMDatasetLoader",
+    "FMDatasetSequenceIterator",
 ]

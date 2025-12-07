@@ -8,18 +8,40 @@ The core architecture that combines:
 
 This network learns geometry in a canonical object frame, making it
 invariant to observer position and rotation.
+
+All models inherit from BaseINR and follow the standard interface:
+- forward() returns Dict[str, Tensor]
+- Standard output keys: 'sdf'/'density', 'rgb', 'normal', 'local_coords'
 """
 
 from typing import Dict, Tuple, Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from ..core.base import BaseINR
+from ..core.constants import (
+    DEFAULT_HIDDEN_FEATURES,
+    DEFAULT_HIDDEN_LAYERS,
+    DEFAULT_OMEGA_0,
+    DEFAULT_OMEGA_HIDDEN,
+    DEFAULT_NUM_FREQUENCIES,
+    OUTPUT_SDF,
+    OUTPUT_DENSITY,
+    OUTPUT_RGB,
+    OUTPUT_NORMAL,
+    OUTPUT_GRADIENT,
+    OUTPUT_LOCAL_COORDS,
+    OUTPUT_FEATURES,
+)
+from ..core.types import TensorDict, ObserverPose
 
 from .layers import PGAMotorLayer, SineLayer, SirenMLP
 from .encoders import PositionalEncoder, FourierEncoder
 
 
-class PGA_INR(nn.Module):
+class PGA_INR(BaseINR):
     """
     Observer-Independent Implicit Neural Representation using PGA.
 
@@ -30,25 +52,33 @@ class PGA_INR(nn.Module):
     frame before processing, the network learns geometry independent of
     the observer's viewpoint.
 
+    Inherits from BaseINR for consistent API.
+
     Architecture:
-        1. PGAMotorLayer: Transform world points → local points
+        1. PGAMotorLayer: Transform world points -> local points
         2. Optional encoder: Positional/Fourier encoding
         3. SIREN backbone: Feature extraction
         4. Output heads:
            - Density/SDF (grade-0 scalar)
            - RGB color (grade-1 vector attribute)
            - Surface normal (grade-2 bivector, as vector)
+
+    Standard Output Keys:
+        - 'density': Density/SDF values (B, N, 1)
+        - 'rgb': Color values in [0, 1] (B, N, 3)
+        - 'normal': Unit surface normals (B, N, 3) if output_normals=True
+        - 'local_coords': Coordinates in local frame (B, N, 3)
     """
 
     def __init__(
         self,
-        hidden_features: int = 256,
-        hidden_layers: int = 3,
-        omega_0: float = 30.0,
+        hidden_features: int = DEFAULT_HIDDEN_FEATURES,
+        hidden_layers: int = DEFAULT_HIDDEN_LAYERS,
+        omega_0: float = DEFAULT_OMEGA_0,
         output_normals: bool = True,
         use_encoder: bool = False,
-        encoder_type: str = 'positional',
-        encoder_frequencies: int = 6
+        encoder_type: str = "positional",
+        encoder_frequencies: int = DEFAULT_NUM_FREQUENCIES,
     ):
         """
         Args:
@@ -62,6 +92,8 @@ class PGA_INR(nn.Module):
         """
         super().__init__()
 
+        self.hidden_features = hidden_features
+        self.hidden_layers = hidden_layers
         self.output_normals = output_normals
 
         # 1. PGA Motor Interface
@@ -70,17 +102,17 @@ class PGA_INR(nn.Module):
         # 2. Optional positional encoder
         self.use_encoder = use_encoder
         if use_encoder:
-            if encoder_type == 'positional':
+            if encoder_type == "positional":
                 self.encoder = PositionalEncoder(
                     input_dim=3,
                     num_frequencies=encoder_frequencies,
-                    include_input=True
+                    include_input=True,
                 )
             else:
                 self.encoder = FourierEncoder(
                     input_dim=3,
                     num_frequencies=encoder_frequencies * 2 * 3,
-                    include_input=True
+                    include_input=True,
                 )
             input_dim = self.encoder.output_dim
         else:
@@ -93,7 +125,7 @@ class PGA_INR(nn.Module):
             hidden_features=hidden_features,
             hidden_layers=hidden_layers,
             out_features=hidden_features,
-            omega_0=omega_0
+            omega_0=omega_0,
         )
 
         # 4. Output heads
@@ -123,11 +155,15 @@ class PGA_INR(nn.Module):
             nn.init.xavier_uniform_(self.normal_head.weight, gain=0.1)
             nn.init.zeros_(self.normal_head.bias)
 
+    def get_output_type(self) -> str:
+        """Return 'density' as primary output type."""
+        return OUTPUT_DENSITY
+
     def forward(
         self,
         query_points: torch.Tensor,
-        observer_pose: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
-    ) -> Dict[str, torch.Tensor]:
+        observer_pose: Optional[ObserverPose] = None,
+    ) -> TensorDict:
         """
         Forward pass.
 
@@ -139,7 +175,7 @@ class PGA_INR(nn.Module):
                           If None, points are assumed to be in local frame.
 
         Returns:
-            Dictionary with:
+            Dictionary with standard keys:
                 - 'density': SDF/density values (B, N, 1)
                 - 'rgb': Color values in [0, 1] (B, N, 3)
                 - 'normal': Unit surface normals (B, N, 3) if output_normals=True
@@ -165,27 +201,27 @@ class PGA_INR(nn.Module):
         rgb = torch.sigmoid(self.color_head(features))
 
         outputs = {
-            'density': density,
-            'rgb': rgb,
-            'local_coords': local_points,
+            OUTPUT_DENSITY: density,
+            OUTPUT_RGB: rgb,
+            OUTPUT_LOCAL_COORDS: local_points,
         }
 
         if self.output_normals:
             # Normals should be unit vectors
             normals = F.normalize(self.normal_head(features), dim=-1)
-            outputs['normal'] = normals
+            outputs[OUTPUT_NORMAL] = normals
 
         return outputs
 
     def forward_with_gradient(
         self,
         query_points: torch.Tensor,
-        observer_pose: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
-    ) -> Dict[str, torch.Tensor]:
+        observer_pose: Optional[ObserverPose] = None,
+    ) -> TensorDict:
         """
         Forward pass that also computes the gradient of the density field.
 
-        The gradient ∇f(x) is the true surface normal for SDFs.
+        The gradient nabla f(x) is the true surface normal for SDFs.
 
         Args:
             query_points: World-space coordinates (B, N, 3)
@@ -220,19 +256,19 @@ class PGA_INR(nn.Module):
             grad_outputs=torch.ones_like(density),
             create_graph=True,
             retain_graph=True,
-            only_inputs=True
+            only_inputs=True,
         )[0]
 
         outputs = {
-            'density': density,
-            'rgb': rgb,
-            'local_coords': local_points,
-            'gradient': gradient,
+            OUTPUT_DENSITY: density,
+            OUTPUT_RGB: rgb,
+            OUTPUT_LOCAL_COORDS: local_points,
+            OUTPUT_GRADIENT: gradient,
         }
 
         if self.output_normals:
             normals = F.normalize(self.normal_head(features), dim=-1)
-            outputs['normal'] = normals
+            outputs[OUTPUT_NORMAL] = normals
 
         return outputs
 
@@ -245,14 +281,19 @@ class PGA_INR_SDF(PGA_INR):
 
     When geometric_init=True, uses a skip connection from input coordinates
     to output, allowing proper initialization to a unit sphere SDF.
+
+    Standard Output Keys:
+        - 'sdf': Signed distance values (B, N, 1)
+        - 'normal': Surface normals (B, N, 3)
+        - 'local_coords': Coordinates in local frame (B, N, 3)
     """
 
     def __init__(
         self,
-        hidden_features: int = 256,
-        hidden_layers: int = 4,
-        omega_0: float = 30.0,
-        geometric_init: bool = True
+        hidden_features: int = DEFAULT_HIDDEN_FEATURES,
+        hidden_layers: int = DEFAULT_HIDDEN_LAYERS,
+        omega_0: float = DEFAULT_OMEGA_0,
+        geometric_init: bool = True,
     ):
         """
         Args:
@@ -266,10 +307,10 @@ class PGA_INR_SDF(PGA_INR):
             hidden_layers=hidden_layers,
             omega_0=omega_0,
             output_normals=True,
-            use_encoder=False
+            use_encoder=False,
         )
 
-        # Remove color head
+        # Remove color head (SDF models don't output color)
         del self.color_head
 
         # Store whether we're using geometric init
@@ -297,11 +338,15 @@ class PGA_INR_SDF(PGA_INR):
             self.density_head.weight.zero_()
             self.density_head.bias.zero_()
 
+    def get_output_type(self) -> str:
+        """Return 'sdf' as primary output type."""
+        return OUTPUT_SDF
+
     def forward(
         self,
         query_points: torch.Tensor,
-        observer_pose: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
-    ) -> Dict[str, torch.Tensor]:
+        observer_pose: Optional[ObserverPose] = None,
+    ) -> TensorDict:
         """Forward pass for SDF."""
         if observer_pose is not None:
             local_points = self.pga_motor(query_points, observer_pose)
@@ -324,15 +369,17 @@ class PGA_INR_SDF(PGA_INR):
         normals = F.normalize(self.normal_head(features), dim=-1)
 
         return {
-            'sdf': sdf,
-            'normal': normals,
-            'local_coords': local_points,
+            OUTPUT_SDF: sdf,
+            OUTPUT_NORMAL: normals,
+            OUTPUT_LOCAL_COORDS: local_points,
         }
 
 
-class PGA_INR_SDF_V2(nn.Module):
+class PGA_INR_SDF_V2(BaseINR):
     """
     Enhanced SDF network (V2) with maximum expressiveness.
+
+    Inherits from BaseINR for consistent API.
 
     Improvements over PGA_INR_SDF:
     1. Positional encoding for high-frequency detail capture
@@ -343,19 +390,25 @@ class PGA_INR_SDF_V2(nn.Module):
     6. Wider and deeper network with careful initialization
 
     Architecture:
-        Input (3D) → Positional Encoding → [SIREN blocks with skip connections] → SDF + Normal
+        Input (3D) -> Positional Encoding -> [SIREN blocks with skip connections] -> SDF + Normal
 
     Recommended for complex shapes like human figures, animals, or detailed objects.
+
+    Standard Output Keys:
+        - 'sdf': Signed distance values (B, N, 1)
+        - 'normal': Surface normals (B, N, 3)
+        - 'local_coords': Coordinates in local frame (B, N, 3)
+        - 'features': Hidden features (B, N, hidden_dim) if return_features=True
     """
 
     def __init__(
         self,
         hidden_features: int = 512,
         hidden_layers: int = 8,
-        omega_0: float = 30.0,
+        omega_0: float = DEFAULT_OMEGA_0,
         omega_hidden: Optional[float] = None,
         use_positional_encoding: bool = True,
-        num_frequencies: int = 6,
+        num_frequencies: int = DEFAULT_NUM_FREQUENCIES,
         skip_connections: Optional[Tuple[int, ...]] = None,
         geometric_init: bool = True,
         weight_norm: bool = False,
@@ -384,6 +437,9 @@ class PGA_INR_SDF_V2(nn.Module):
         self.geometric_init = geometric_init
         self.use_positional_encoding = use_positional_encoding
 
+        # PGA motor layer for observer-independent coordinate transform
+        self.pga_motor = PGAMotorLayer()
+
         # Default skip connection at middle layer
         if skip_connections is None:
             skip_connections = (hidden_layers // 2,)
@@ -398,7 +454,7 @@ class PGA_INR_SDF_V2(nn.Module):
             self.encoder = PositionalEncoder(
                 input_dim=3,
                 num_frequencies=num_frequencies,
-                include_input=True
+                include_input=True,
             )
             input_dim = self.encoder.output_dim  # 3 + 3*2*num_freq = 3 + 36 = 39
         else:
@@ -429,7 +485,7 @@ class PGA_INR_SDF_V2(nn.Module):
                 in_features=in_dim,
                 out_features=hidden_features,
                 is_first=(i == 0),
-                omega_0=omega_0 if i == 0 else self.omega_hidden
+                omega_0=omega_0 if i == 0 else self.omega_hidden,
             )
 
             # Optional weight normalization
@@ -450,9 +506,9 @@ class PGA_INR_SDF_V2(nn.Module):
         self.normal_head = nn.Linear(hidden_features, 3)
 
         # 4. Final activation
-        if final_activation == 'tanh':
+        if final_activation == "tanh":
             self.final_act = nn.Tanh()
-        elif final_activation == 'softplus':
+        elif final_activation == "softplus":
             self.final_act = nn.Softplus(beta=100)
         else:
             self.final_act = None
@@ -485,12 +541,16 @@ class PGA_INR_SDF_V2(nn.Module):
             self.sdf_head.weight.zero_()
             self.sdf_head.bias.zero_()
 
+    def get_output_type(self) -> str:
+        """Return 'sdf' as primary output type."""
+        return OUTPUT_SDF
+
     def forward(
         self,
         query_points: torch.Tensor,
-        observer_pose: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        return_features: bool = False
-    ) -> Dict[str, torch.Tensor]:
+        observer_pose: Optional[ObserverPose] = None,
+        return_features: bool = False,
+    ) -> TensorDict:
         """
         Forward pass.
 
@@ -500,7 +560,7 @@ class PGA_INR_SDF_V2(nn.Module):
             return_features: If True, also return intermediate features
 
         Returns:
-            Dictionary with:
+            Dictionary with standard keys:
                 - 'sdf': Signed distance values (*, 1)
                 - 'normal': Surface normals (*, 3)
                 - 'local_coords': Local coordinates (*, 3)
@@ -508,9 +568,7 @@ class PGA_INR_SDF_V2(nn.Module):
         """
         # Handle observer pose (PGA motor transformation)
         if observer_pose is not None:
-            from .layers import PGAMotorLayer
-            pga_motor = PGAMotorLayer()
-            local_points = pga_motor(query_points, observer_pose)
+            local_points = self.pga_motor(query_points, observer_pose)
         else:
             local_points = query_points
 
@@ -561,25 +619,25 @@ class PGA_INR_SDF_V2(nn.Module):
         normals = F.normalize(self.normal_head(features), dim=-1)
 
         outputs = {
-            'sdf': sdf,
-            'normal': normals,
-            'local_coords': local_points,
+            OUTPUT_SDF: sdf,
+            OUTPUT_NORMAL: normals,
+            OUTPUT_LOCAL_COORDS: local_points,
         }
 
         if return_features:
-            outputs['features'] = features
+            outputs[OUTPUT_FEATURES] = features
 
         return outputs
 
     def forward_with_gradient(
         self,
         query_points: torch.Tensor,
-        observer_pose: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
-    ) -> Dict[str, torch.Tensor]:
+        observer_pose: Optional[ObserverPose] = None,
+    ) -> TensorDict:
         """
         Forward pass that also computes analytical SDF gradient.
 
-        The gradient ∇f(x) is the true surface normal for valid SDFs.
+        The gradient nabla f(x) is the true surface normal for valid SDFs.
 
         Args:
             query_points: Coordinates (B, N, 3) or (N, 3)
@@ -595,19 +653,19 @@ class PGA_INR_SDF_V2(nn.Module):
 
         # Compute gradient of SDF w.r.t. input coordinates
         gradient = torch.autograd.grad(
-            outputs=outputs['sdf'],
+            outputs=outputs[OUTPUT_SDF],
             inputs=query_points,
-            grad_outputs=torch.ones_like(outputs['sdf']),
+            grad_outputs=torch.ones_like(outputs[OUTPUT_SDF]),
             create_graph=True,
             retain_graph=True,
-            only_inputs=True
+            only_inputs=True,
         )[0]
 
-        outputs['gradient'] = gradient
+        outputs[OUTPUT_GRADIENT] = gradient
         return outputs
 
     @classmethod
-    def from_preset(cls, preset: str, **kwargs) -> 'PGA_INR_SDF_V2':
+    def from_preset(cls, preset: str, **kwargs) -> "PGA_INR_SDF_V2":
         """
         Create model from quality preset.
 
@@ -625,58 +683,56 @@ class PGA_INR_SDF_V2(nn.Module):
             Configured PGA_INR_SDF_V2 instance
         """
         presets = {
-            'fast': {
-                'hidden_features': 256,
-                'hidden_layers': 4,
-                'omega_0': 30.0,
-                'use_positional_encoding': False,
-                'num_frequencies': 4,
-                'skip_connections': (2,),
-                'geometric_init': True,
+            "fast": {
+                "hidden_features": 256,
+                "hidden_layers": 4,
+                "omega_0": DEFAULT_OMEGA_0,
+                "use_positional_encoding": False,
+                "num_frequencies": 4,
+                "skip_connections": (2,),
+                "geometric_init": True,
             },
-            'balanced': {
-                'hidden_features': 512,
-                'hidden_layers': 6,
-                'omega_0': 30.0,
-                'use_positional_encoding': True,
-                'num_frequencies': 6,
-                'skip_connections': (3,),
-                'geometric_init': True,
+            "balanced": {
+                "hidden_features": 512,
+                "hidden_layers": 6,
+                "omega_0": DEFAULT_OMEGA_0,
+                "use_positional_encoding": True,
+                "num_frequencies": DEFAULT_NUM_FREQUENCIES,
+                "skip_connections": (3,),
+                "geometric_init": True,
             },
-            'high_quality': {
-                'hidden_features': 512,
-                'hidden_layers': 8,
-                'omega_0': 30.0,
-                'omega_hidden': 30.0,
-                'use_positional_encoding': True,
-                'num_frequencies': 8,
-                'skip_connections': (4,),
-                'geometric_init': True,
+            "high_quality": {
+                "hidden_features": 512,
+                "hidden_layers": 8,
+                "omega_0": DEFAULT_OMEGA_0,
+                "omega_hidden": DEFAULT_OMEGA_HIDDEN,
+                "use_positional_encoding": True,
+                "num_frequencies": 8,
+                "skip_connections": (4,),
+                "geometric_init": True,
             },
-            'extreme': {
-                'hidden_features': 768,
-                'hidden_layers': 10,
-                'omega_0': 30.0,
-                'omega_hidden': 30.0,
-                'use_positional_encoding': True,
-                'num_frequencies': 10,
-                'skip_connections': (3, 6),
-                'geometric_init': True,
-                'weight_norm': True,
+            "extreme": {
+                "hidden_features": 768,
+                "hidden_layers": 10,
+                "omega_0": DEFAULT_OMEGA_0,
+                "omega_hidden": DEFAULT_OMEGA_HIDDEN,
+                "use_positional_encoding": True,
+                "num_frequencies": 10,
+                "skip_connections": (3, 6),
+                "geometric_init": True,
+                "weight_norm": True,
             },
         }
 
         if preset not in presets:
-            raise ValueError(f"Unknown preset: {preset}. Choose from {list(presets.keys())}")
+            raise ValueError(
+                f"Unknown preset: {preset}. Choose from {list(presets.keys())}"
+            )
 
         config = presets[preset].copy()
         config.update(kwargs)
 
         return cls(**config)
-
-    def count_parameters(self) -> int:
-        """Count total trainable parameters."""
-        return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
     def __repr__(self) -> str:
         return (
@@ -696,15 +752,20 @@ class PGA_INR_NeRF(PGA_INR):
     PGA-INR for Neural Radiance Fields.
 
     Includes view-dependent color prediction.
+
+    Standard Output Keys:
+        - 'density': Density values (B, N, 1)
+        - 'rgb': View-dependent colors (B, N, 3)
+        - 'local_coords': Coordinates in local frame (B, N, 3)
     """
 
     def __init__(
         self,
-        hidden_features: int = 256,
-        hidden_layers: int = 4,
-        omega_0: float = 30.0,
+        hidden_features: int = DEFAULT_HIDDEN_FEATURES,
+        hidden_layers: int = DEFAULT_HIDDEN_LAYERS,
+        omega_0: float = DEFAULT_OMEGA_0,
         view_dependent: bool = True,
-        view_features: int = 64
+        view_features: int = 64,
     ):
         """
         Args:
@@ -720,7 +781,7 @@ class PGA_INR_NeRF(PGA_INR):
             omega_0=omega_0,
             output_normals=False,
             use_encoder=True,
-            encoder_frequencies=10
+            encoder_frequencies=10,
         )
 
         self.view_dependent = view_dependent
@@ -730,13 +791,15 @@ class PGA_INR_NeRF(PGA_INR):
             self.view_encoder = PositionalEncoder(
                 input_dim=3,
                 num_frequencies=4,
-                include_input=True
+                include_input=True,
             )
 
             # Replace color head with view-dependent version
             del self.color_head
             self.color_net = nn.Sequential(
-                nn.Linear(hidden_features + self.view_encoder.output_dim, view_features),
+                nn.Linear(
+                    hidden_features + self.view_encoder.output_dim, view_features
+                ),
                 nn.ReLU(),
                 nn.Linear(view_features, 3),
             )
@@ -744,9 +807,9 @@ class PGA_INR_NeRF(PGA_INR):
     def forward(
         self,
         query_points: torch.Tensor,
-        observer_pose: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        view_dirs: Optional[torch.Tensor] = None
-    ) -> Dict[str, torch.Tensor]:
+        observer_pose: Optional[ObserverPose] = None,
+        view_dirs: Optional[torch.Tensor] = None,
+    ) -> TensorDict:
         """
         Forward pass with optional view direction.
 
@@ -780,9 +843,9 @@ class PGA_INR_NeRF(PGA_INR):
             rgb = torch.sigmoid(self.color_head(features))
 
         return {
-            'density': density,
-            'rgb': rgb,
-            'local_coords': local_points,
+            OUTPUT_DENSITY: density,
+            OUTPUT_RGB: rgb,
+            OUTPUT_LOCAL_COORDS: local_points,
         }
 
 
@@ -790,9 +853,9 @@ def compose_scenes(
     query_points: torch.Tensor,
     models: list,
     poses: list,
-    operation: str = 'union',
-    blend_k: float = 32.0
-) -> Dict[str, torch.Tensor]:
+    operation: str = "union",
+    blend_k: float = 32.0,
+) -> TensorDict:
     """
     Compose multiple PGA-INR models into a scene.
 
@@ -805,11 +868,11 @@ def compose_scenes(
 
     Args:
         query_points: Query points in world space (B, N, 3)
-        models: List of PGA_INR models
+        models: List of PGA_INR models (must inherit from BaseINR)
         poses: List of (translation, quaternion) tuples for each model
         operation: 'union' (max for density, min for SDF),
                   'intersection' (min for density, max for SDF),
-                  or 'smooth_union'
+                  'smooth_union', or 'subtraction'
         blend_k: Smoothness parameter for smooth_union (higher = sharper)
 
     Returns:
@@ -825,27 +888,27 @@ def compose_scenes(
         outputs_list.append(out)
 
     # Determine if using SDF or density models
-    is_sdf = 'sdf' in outputs_list[0]
-    value_key = 'sdf' if is_sdf else 'density'
+    is_sdf = OUTPUT_SDF in outputs_list[0]
+    value_key = OUTPUT_SDF if is_sdf else OUTPUT_DENSITY
 
     # Combine values
     values = torch.stack([o[value_key] for o in outputs_list], dim=0)
 
-    if operation == 'union':
+    if operation == "union":
         if is_sdf:
             # For SDF: union = min (take closest surface)
             combined_value, idx = values.min(dim=0)
         else:
             # For density: union = max
             combined_value, idx = values.max(dim=0)
-    elif operation == 'intersection':
+    elif operation == "intersection":
         if is_sdf:
             # For SDF: intersection = max (take farthest surface)
             combined_value, idx = values.max(dim=0)
         else:
             # For density: intersection = min
             combined_value, idx = values.min(dim=0)
-    elif operation == 'smooth_union':
+    elif operation == "smooth_union":
         k = 1.0 / blend_k if blend_k > 0 else 32.0  # Convert blend_k to smoothness
         if is_sdf:
             # Smooth min for SDF
@@ -855,8 +918,8 @@ def compose_scenes(
             # Smooth max for density
             combined_value = torch.logsumexp(values / k, dim=0) * k
             idx = values.argmax(dim=0)
-    elif operation == 'subtraction':
-        # Boolean subtraction: A - B = A ∩ ¬B
+    elif operation == "subtraction":
+        # Boolean subtraction: A - B = A AND NOT(B)
         # For SDF: max(sdf_A, -sdf_B) - first model minus all others
         if len(models) != 2:
             raise ValueError("Subtraction requires exactly 2 models")
@@ -874,23 +937,23 @@ def compose_scenes(
 
     result = {
         value_key: combined_value,
-        'object_idx': idx,
+        "object_idx": idx,
     }
 
     # Handle color if available
-    if 'rgb' in outputs_list[0]:
-        colors = torch.stack([o['rgb'] for o in outputs_list], dim=0)
+    if OUTPUT_RGB in outputs_list[0]:
+        colors = torch.stack([o[OUTPUT_RGB] for o in outputs_list], dim=0)
         B, N, _ = query_points.shape
         idx_expanded = idx.expand(-1, -1, 3)
         combined_color = torch.gather(colors, 0, idx_expanded.unsqueeze(0)).squeeze(0)
-        result['rgb'] = combined_color
+        result[OUTPUT_RGB] = combined_color
 
     # Handle normals if available
-    if 'normal' in outputs_list[0]:
-        normals = torch.stack([o['normal'] for o in outputs_list], dim=0)
+    if OUTPUT_NORMAL in outputs_list[0]:
+        normals = torch.stack([o[OUTPUT_NORMAL] for o in outputs_list], dim=0)
         B, N, _ = query_points.shape
         idx_expanded = idx.expand(-1, -1, 3)
         combined_normal = torch.gather(normals, 0, idx_expanded.unsqueeze(0)).squeeze(0)
-        result['normal'] = combined_normal
+        result[OUTPUT_NORMAL] = combined_normal
 
     return result

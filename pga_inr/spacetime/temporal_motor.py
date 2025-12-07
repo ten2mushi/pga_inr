@@ -97,7 +97,7 @@ class TemporalMotor(nn.Module):
         self,
         t: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Interpolate between keyframes."""
+        """Interpolate between keyframes (vectorized)."""
         from .interpolation import quaternion_slerp
 
         # Normalize quaternions
@@ -108,43 +108,47 @@ class TemporalMotor(nn.Module):
 
         # Handle batched t
         original_shape = t.shape
-        t_flat = t.view(-1)
+        t_flat = t.view(-1)  # (N,)
 
-        translations_out = []
-        quaternions_out = []
+        # Vectorized searchsorted for all time values at once
+        idx = torch.searchsorted(self.keyframe_times, t_flat)  # (N,)
+        idx = idx.clamp(1, num_keyframes - 1)
 
-        for t_val in t_flat:
-            # Find keyframe indices
-            idx = torch.searchsorted(self.keyframe_times, t_val)
-            idx = idx.clamp(1, num_keyframes - 1)
+        idx_prev = idx - 1  # (N,)
+        idx_next = idx  # (N,)
 
-            idx_prev = idx - 1
-            idx_next = idx
+        # Gather keyframe times for all samples
+        t_prev = self.keyframe_times[idx_prev]  # (N,)
+        t_next = self.keyframe_times[idx_next]  # (N,)
+        local_t = (t_flat - t_prev) / (t_next - t_prev + 1e-8)  # (N,)
 
-            # Local interpolation parameter
-            t_prev = self.keyframe_times[idx_prev]
-            t_next = self.keyframe_times[idx_next]
-            local_t = (t_val - t_prev) / (t_next - t_prev + 1e-8)
+        # Gather keyframe values for all samples
+        trans_prev = self.translations[idx_prev]  # (N, 3)
+        trans_next = self.translations[idx_next]  # (N, 3)
+        quat_prev = quaternions[idx_prev]  # (N, 4)
+        quat_next = quaternions[idx_next]  # (N, 4)
 
-            # Get keyframe values
-            trans_prev = self.translations[idx_prev]
-            trans_next = self.translations[idx_next]
-            quat_prev = quaternions[idx_prev]
-            quat_next = quaternions[idx_next]
+        # Expand local_t for broadcasting
+        local_t_trans = local_t.unsqueeze(-1)  # (N, 1)
 
-            # Interpolate
-            if self.interpolation == 'slerp':
-                trans = (1 - local_t) * trans_prev + local_t * trans_next
-                quat = quaternion_slerp(quat_prev, quat_next, local_t)
-            else:
-                trans = (1 - local_t) * trans_prev + local_t * trans_next
-                quat = F.normalize((1 - local_t) * quat_prev + local_t * quat_next, dim=-1)
+        # Interpolate translations (linear)
+        translations_out = (1 - local_t_trans) * trans_prev + local_t_trans * trans_next  # (N, 3)
 
-            translations_out.append(trans)
-            quaternions_out.append(quat)
+        # Interpolate quaternions
+        if self.interpolation == 'slerp':
+            # Vectorized SLERP: quaternion_slerp expects t to broadcast with quaternion shape
+            # local_t needs to be (N, 1) to broadcast with (N, 4) quaternions
+            quaternions_out = quaternion_slerp(quat_prev, quat_next, local_t_trans)  # (N, 4)
+        else:
+            # Linear interpolation with normalization
+            quaternions_out = F.normalize(
+                (1 - local_t_trans) * quat_prev + local_t_trans * quat_next,
+                dim=-1
+            )  # (N, 4)
 
-        translations_out = torch.stack(translations_out).view(*original_shape, 3)
-        quaternions_out = torch.stack(quaternions_out).view(*original_shape, 4)
+        # Reshape to original batch shape
+        translations_out = translations_out.view(*original_shape, 3)
+        quaternions_out = quaternions_out.view(*original_shape, 4)
 
         return translations_out, quaternions_out
 

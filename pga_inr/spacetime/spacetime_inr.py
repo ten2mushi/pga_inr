@@ -322,12 +322,15 @@ class ArticulatedNeuralField(nn.Module):
             trans, quat = global_transforms[name]
 
             # Inverse transform
+            # For rotation matrices, R^{-1} = R^T
             R = quaternion_to_matrix(quat)
-            R_inv = R.T
-            t_inv = -R_inv @ trans
+            # Use transpose(-2, -1) to handle batched rotation matrices correctly
+            # .T only works for 2D tensors; for (..., 3, 3) we need transpose on last 2 dims
+            R_inv = R.transpose(-2, -1) if R.dim() > 2 else R.T
+            t_inv = -torch.einsum('...ij,...j->...i', R_inv, trans)
 
             # Apply inverse transform
-            points_local = torch.einsum('ij,bnj->bni', R_inv, query_points) + t_inv
+            points_local = torch.einsum('...ij,...nj->...ni', R_inv, query_points) + t_inv.unsqueeze(-2)
 
             # Weighted contribution
             w = weights[..., i:i+1]

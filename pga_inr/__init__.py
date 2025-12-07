@@ -11,16 +11,26 @@ Key Features:
 - HyperNetwork-based generative models
 - Sphere tracing renderer
 - 4D spacetime extensions for articulated models
+- Diffusion-based motion generation with coordinate-free INR
+
+API Design:
+- All INR models inherit from BaseINR or BaseGenerativeINR
+- All forward() methods return Dict[str, Tensor]
+- Standard output keys: 'sdf'/'density', 'rgb', 'normal', 'local_coords'
+- Motion tensors follow (B, J, D, T) shape convention
 
 Example:
     >>> import pga_inr
-    >>> model = pga_inr.models.PGA_INR(hidden_features=256)
+    >>> from pga_inr.core import DEFAULT_HIDDEN_FEATURES
+    >>> model = pga_inr.models.PGA_INR(hidden_features=DEFAULT_HIDDEN_FEATURES)
     >>> outputs = model(query_points, observer_pose)
+    >>> sdf = outputs['density']  # or outputs['sdf'] for SDF models
 """
 
 __version__ = "0.1.0"
 __author__ = "PGA-INR Contributors"
 
+from . import core
 from . import pga
 from . import models
 from . import losses
@@ -29,8 +39,12 @@ from . import data
 from . import spacetime
 from . import training
 from . import utils
+from . import diffusion
+from . import ops
+from . import slam
 
 __all__ = [
+    "core",
     "pga",
     "models",
     "losses",
@@ -39,4 +53,7 @@ __all__ = [
     "spacetime",
     "training",
     "utils",
+    "diffusion",
+    "ops",
+    "slam",
 ]

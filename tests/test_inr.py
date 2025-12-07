@@ -290,7 +290,10 @@ class TestGenerativePGA_INR:
 
         outputs = model(points, observer_pose=None, latent_code=z)
 
-        assert outputs.shape == (batch_size, num_points, 4)  # density + RGB
+        # forward() now returns a dictionary (API standardization)
+        assert isinstance(outputs, dict)
+        assert outputs['density'].shape == (batch_size, num_points, 1)
+        assert outputs['rgb'].shape == (batch_size, num_points, 3)
 
     def test_generative_sdf_output_shape(self):
         """Test generative SDF model."""
@@ -303,9 +306,11 @@ class TestGenerativePGA_INR:
         points = torch.randn(2, 100, 3)
         z = torch.randn(2, 16)
 
-        outputs = model.forward_dict(points, observer_pose=None, latent_code=z)
+        # forward() returns a dictionary
+        outputs = model(points, observer_pose=None, latent_code=z)
 
         assert outputs['sdf'].shape == (2, 100, 1)
+        assert outputs['normal'].shape == (2, 100, 3)
 
     def test_latent_code_bank(self):
         """Test latent code bank."""

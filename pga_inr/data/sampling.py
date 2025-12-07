@@ -6,11 +6,15 @@ Provides various sampling methods for generating training points:
 - Surface-biased sampling (near the mesh surface)
 - Importance sampling based on SDF gradient
 - Stratified sampling for better coverage
+- Curriculum importance sampling (progressive surface focus)
+- Newton projection sampling (exact surface points)
+- Error-driven sampling (adaptive to training loss)
 """
 
-from typing import Tuple, Optional, Callable
+from typing import Tuple, Optional, Callable, Dict, List, Union
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class UniformSampler:
@@ -772,3 +776,519 @@ class HierarchicalSampler:
         points = origins.unsqueeze(1) + t_combined.unsqueeze(-1) * directions.unsqueeze(1)
 
         return points, t_combined
+
+
+# =============================================================================
+# Curriculum and Adaptive Sampling (Enhanced)
+# =============================================================================
+
+
+class CurriculumImportanceSampler:
+    """
+    Progressive sampling from uniform distribution to surface-focused.
+
+    Implements curriculum learning for SDF training by gradually increasing
+    the concentration of samples near the surface. Early training uses
+    uniform sampling for global coverage, while later stages focus on
+    surface details.
+
+    The curriculum follows: uniform -> near-surface -> exact surface
+    """
+
+    def __init__(
+        self,
+        sdf_fn: Callable[[torch.Tensor], torch.Tensor],
+        bounds: Tuple[float, float] = (-1.0, 1.0),
+        curriculum_steps: int = 1000,
+        surface_band: float = 0.1,
+        min_surface_ratio: float = 0.0,
+        max_surface_ratio: float = 0.9,
+        device: torch.device = torch.device('cpu')
+    ):
+        """
+        Args:
+            sdf_fn: Function mapping points (N, 3) -> SDF values (N,)
+            bounds: Coordinate bounds for uniform sampling
+            curriculum_steps: Total steps in curriculum
+            surface_band: Width of band around surface for importance
+            min_surface_ratio: Starting surface focus ratio
+            max_surface_ratio: Final surface focus ratio
+            device: Device for generated tensors
+        """
+        self.sdf_fn = sdf_fn
+        self.bounds = bounds
+        self.curriculum_steps = curriculum_steps
+        self.surface_band = surface_band
+        self.min_surface_ratio = min_surface_ratio
+        self.max_surface_ratio = max_surface_ratio
+        self.device = device
+
+        # Current step
+        self._current_step = 0
+        self._surface_ratio = min_surface_ratio
+
+    def set_step(self, step: int):
+        """
+        Update curriculum step and compute new surface ratio.
+
+        Args:
+            step: Current training step
+        """
+        self._current_step = min(step, self.curriculum_steps)
+        progress = self._current_step / max(self.curriculum_steps, 1)
+        # Smooth progression using cosine schedule
+        self._surface_ratio = (
+            self.min_surface_ratio +
+            (self.max_surface_ratio - self.min_surface_ratio) *
+            (1 - np.cos(progress * np.pi)) / 2
+        )
+
+    @property
+    def surface_ratio(self) -> float:
+        """Current ratio of surface-focused samples."""
+        return self._surface_ratio
+
+    @torch.no_grad()
+    def sample(
+        self,
+        num_samples: int,
+        batch_size: int = 1
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Generate curriculum-aware samples.
+
+        Returns points biased toward surface based on curriculum progress.
+
+        Args:
+            num_samples: Number of points per batch
+            batch_size: Number of batches
+
+        Returns:
+            (points, weights) where:
+                points: (batch_size, num_samples, 3)
+                weights: (batch_size, num_samples) importance weights
+        """
+        num_surface = int(num_samples * self._surface_ratio)
+        num_uniform = num_samples - num_surface
+
+        all_points = []
+        all_weights = []
+
+        for _ in range(batch_size):
+            batch_points = []
+            batch_weights = []
+
+            # Uniform samples
+            if num_uniform > 0:
+                uniform_pts = torch.rand(num_uniform, 3, device=self.device)
+                uniform_pts = uniform_pts * (self.bounds[1] - self.bounds[0]) + self.bounds[0]
+                batch_points.append(uniform_pts)
+                batch_weights.append(torch.ones(num_uniform, device=self.device))
+
+            # Surface-biased samples via rejection sampling
+            if num_surface > 0:
+                # Generate candidates (oversample for rejection)
+                num_candidates = num_surface * 10
+                candidates = torch.rand(num_candidates, 3, device=self.device)
+                candidates = candidates * (self.bounds[1] - self.bounds[0]) + self.bounds[0]
+
+                # Evaluate SDF
+                sdf_vals = self.sdf_fn(candidates)
+                if sdf_vals.dim() > 1:
+                    sdf_vals = sdf_vals.squeeze(-1)
+
+                # Importance based on distance to surface
+                importance = torch.exp(-torch.abs(sdf_vals) / self.surface_band)
+                importance = importance / importance.sum()
+
+                # Sample based on importance
+                indices = torch.multinomial(importance, num_surface, replacement=True)
+                surface_pts = candidates[indices]
+                surface_weights = 1.0 / (importance[indices] * num_candidates + 1e-8)
+
+                batch_points.append(surface_pts)
+                batch_weights.append(surface_weights)
+
+            # Combine
+            points = torch.cat(batch_points, dim=0)
+            weights = torch.cat(batch_weights, dim=0)
+
+            # Shuffle
+            perm = torch.randperm(num_samples, device=self.device)
+            points = points[perm]
+            weights = weights[perm]
+
+            # Normalize weights
+            weights = weights / weights.mean()
+
+            all_points.append(points)
+            all_weights.append(weights)
+
+        return torch.stack(all_points), torch.stack(all_weights)
+
+
+class NewtonProjectionSampler:
+    """
+    Project random points onto the SDF surface via Newton's method.
+
+    Generates exact surface points by iteratively projecting random points
+    toward the zero level set using gradient descent. Useful for:
+    - Generating ground truth surface samples
+    - Finding surface correspondences
+    - Computing surface metrics
+    """
+
+    def __init__(
+        self,
+        sdf_fn: Callable[[torch.Tensor], torch.Tensor],
+        bounds: Tuple[float, float] = (-1.0, 1.0),
+        num_iterations: int = 5,
+        step_size: float = 1.0,
+        convergence_threshold: float = 1e-4,
+        device: torch.device = torch.device('cpu')
+    ):
+        """
+        Args:
+            sdf_fn: Differentiable SDF function mapping (N, 3) -> (N,)
+            bounds: Coordinate bounds for initial random points
+            num_iterations: Maximum Newton iterations
+            step_size: Step size multiplier (1.0 = full Newton step)
+            convergence_threshold: Early stopping threshold
+            device: Device for generated tensors
+        """
+        self.sdf_fn = sdf_fn
+        self.bounds = bounds
+        self.num_iterations = num_iterations
+        self.step_size = step_size
+        self.convergence_threshold = convergence_threshold
+        self.device = device
+
+    def _compute_gradient(self, points: torch.Tensor) -> torch.Tensor:
+        """Compute SDF gradient using autograd."""
+        points = points.requires_grad_(True)
+        sdf = self.sdf_fn(points)
+        if sdf.dim() > 1:
+            sdf = sdf.squeeze(-1)
+
+        grad = torch.autograd.grad(
+            outputs=sdf.sum(),
+            inputs=points,
+            create_graph=False,
+            retain_graph=False
+        )[0]
+
+        return grad
+
+    def sample(
+        self,
+        num_samples: int,
+        batch_size: int = 1,
+        return_convergence: bool = False
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Generate surface samples via Newton projection.
+
+        Args:
+            num_samples: Number of points per batch
+            batch_size: Number of batches
+            return_convergence: If True, return convergence info
+
+        Returns:
+            If return_convergence=False:
+                surface_points: (batch_size, num_samples, 3)
+            If return_convergence=True:
+                (surface_points, converged) where converged is boolean mask
+        """
+        all_points = []
+        all_converged = []
+
+        for _ in range(batch_size):
+            # Initialize with random points
+            points = torch.rand(num_samples, 3, device=self.device)
+            points = points * (self.bounds[1] - self.bounds[0]) + self.bounds[0]
+
+            converged = torch.zeros(num_samples, dtype=torch.bool, device=self.device)
+
+            for _ in range(self.num_iterations):
+                # Skip already converged points
+                active = ~converged
+                if not active.any():
+                    break
+
+                active_points = points[active].clone()
+
+                # Compute SDF and gradient
+                with torch.enable_grad():
+                    grad = self._compute_gradient(active_points)
+
+                with torch.no_grad():
+                    sdf = self.sdf_fn(active_points)
+                    if sdf.dim() > 1:
+                        sdf = sdf.squeeze(-1)
+
+                    # Newton step: p_new = p - sdf * grad / |grad|^2
+                    grad_norm_sq = (grad ** 2).sum(dim=-1, keepdim=True).clamp(min=1e-8)
+                    step = sdf.unsqueeze(-1) * grad / grad_norm_sq
+
+                    # Update points
+                    new_points = active_points - self.step_size * step
+
+                    # Clamp to bounds
+                    new_points = new_points.clamp(self.bounds[0], self.bounds[1])
+
+                    # Check convergence
+                    point_converged = torch.abs(sdf) < self.convergence_threshold
+                    converged[active] = point_converged
+
+                    # Update
+                    points[active] = new_points
+
+            all_points.append(points.detach())
+            all_converged.append(converged)
+
+        points_out = torch.stack(all_points)
+
+        if return_convergence:
+            converged_out = torch.stack(all_converged)
+            return points_out, converged_out
+
+        return points_out
+
+    def project(
+        self,
+        points: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Project given points onto the surface.
+
+        Args:
+            points: Points to project (N, 3) or (B, N, 3)
+
+        Returns:
+            Projected surface points with same shape
+        """
+        input_shape = points.shape
+        if points.dim() == 2:
+            points = points.unsqueeze(0)
+
+        batch_size, num_points, _ = points.shape
+
+        # Flatten for processing
+        points_flat = points.reshape(-1, 3)
+
+        for _ in range(self.num_iterations):
+            with torch.enable_grad():
+                grad = self._compute_gradient(points_flat)
+
+            with torch.no_grad():
+                sdf = self.sdf_fn(points_flat)
+                if sdf.dim() > 1:
+                    sdf = sdf.squeeze(-1)
+
+                grad_norm_sq = (grad ** 2).sum(dim=-1, keepdim=True).clamp(min=1e-8)
+                step = sdf.unsqueeze(-1) * grad / grad_norm_sq
+                points_flat = points_flat - self.step_size * step
+                points_flat = points_flat.clamp(self.bounds[0], self.bounds[1])
+
+        result = points_flat.reshape(input_shape)
+        return result.detach()
+
+
+class ErrorDrivenSampler:
+    """
+    Adaptive sampler that focuses on high-error regions during training.
+
+    Maintains a 3D error grid that tracks reconstruction loss across space.
+    Samples are biased toward regions with higher historical errors, enabling
+    the model to focus on difficult areas.
+
+    Key features:
+    - Exponential moving average of errors
+    - Temperature-controlled exploration/exploitation
+    - Grid-based spatial tracking
+    """
+
+    def __init__(
+        self,
+        bounds: Tuple[float, float] = (-1.0, 1.0),
+        grid_resolution: int = 32,
+        error_decay: float = 0.9,
+        temperature: float = 1.0,
+        min_probability: float = 0.01,
+        device: torch.device = torch.device('cpu')
+    ):
+        """
+        Args:
+            bounds: Coordinate bounds
+            grid_resolution: Resolution of error tracking grid
+            error_decay: Decay factor for error EMA (0-1)
+            temperature: Sampling temperature (higher = more uniform)
+            min_probability: Minimum sampling probability per cell
+            device: Device for generated tensors
+        """
+        self.bounds = bounds
+        self.grid_resolution = grid_resolution
+        self.error_decay = error_decay
+        self.temperature = temperature
+        self.min_probability = min_probability
+        self.device = device
+
+        # Initialize error grid with uniform prior
+        self.error_grid = torch.ones(
+            grid_resolution, grid_resolution, grid_resolution,
+            device=device
+        )
+
+        # Cell size for coordinate conversion
+        self.cell_size = (bounds[1] - bounds[0]) / grid_resolution
+
+        # Statistics
+        self._update_count = 0
+        self._total_samples = 0
+
+    def _point_to_cell(self, points: torch.Tensor) -> torch.Tensor:
+        """Convert points to grid cell indices."""
+        normalized = (points - self.bounds[0]) / (self.bounds[1] - self.bounds[0])
+        indices = (normalized * self.grid_resolution).long()
+        return indices.clamp(0, self.grid_resolution - 1)
+
+    def update_errors(
+        self,
+        points: torch.Tensor,
+        errors: torch.Tensor,
+        weights: Optional[torch.Tensor] = None
+    ):
+        """
+        Update error grid based on observed training errors.
+
+        Uses scatter_add for efficient batch updates with exponential
+        moving average.
+
+        Args:
+            points: Sample points (N, 3) or (B, N, 3)
+            errors: Error values (N,) or (B, N)
+            weights: Optional per-point weights (N,) or (B, N)
+        """
+        # Flatten inputs
+        if points.dim() == 3:
+            points = points.reshape(-1, 3)
+            errors = errors.reshape(-1)
+            if weights is not None:
+                weights = weights.reshape(-1)
+
+        if weights is None:
+            weights = torch.ones_like(errors)
+
+        # Convert to cell indices
+        cell_indices = self._point_to_cell(points)
+
+        # Compute flat indices
+        flat_indices = (
+            cell_indices[:, 0] * self.grid_resolution ** 2 +
+            cell_indices[:, 1] * self.grid_resolution +
+            cell_indices[:, 2]
+        )
+
+        # Accumulate weighted errors per cell
+        weighted_errors = errors * weights
+
+        # Create accumulators
+        error_sum = torch.zeros(
+            self.grid_resolution ** 3, device=self.device
+        ).scatter_add_(0, flat_indices, weighted_errors)
+
+        weight_sum = torch.zeros(
+            self.grid_resolution ** 3, device=self.device
+        ).scatter_add_(0, flat_indices, weights)
+
+        # Compute mean errors per cell (avoid division by zero)
+        mask = weight_sum > 0
+        new_errors = torch.zeros_like(error_sum)
+        new_errors[mask] = error_sum[mask] / weight_sum[mask]
+
+        # Reshape to grid
+        new_errors = new_errors.reshape(
+            self.grid_resolution, self.grid_resolution, self.grid_resolution
+        )
+        update_mask = mask.reshape(
+            self.grid_resolution, self.grid_resolution, self.grid_resolution
+        )
+
+        # EMA update only for observed cells
+        self.error_grid = torch.where(
+            update_mask,
+            self.error_decay * self.error_grid + (1 - self.error_decay) * new_errors,
+            self.error_grid
+        )
+
+        self._update_count += 1
+        self._total_samples += len(points)
+
+    def sample(
+        self,
+        num_samples: int,
+        batch_size: int = 1
+    ) -> torch.Tensor:
+        """
+        Sample points based on error distribution.
+
+        Higher error regions are sampled more frequently.
+
+        Args:
+            num_samples: Number of points per batch
+            batch_size: Number of batches
+
+        Returns:
+            Points of shape (batch_size, num_samples, 3)
+        """
+        # Compute sampling probabilities with temperature
+        log_probs = torch.log(self.error_grid.flatten() + 1e-8) / self.temperature
+        probs = F.softmax(log_probs, dim=0)
+
+        # Apply minimum probability
+        probs = probs.clamp(min=self.min_probability)
+        probs = probs / probs.sum()
+
+        all_samples = []
+
+        for _ in range(batch_size):
+            # Sample cells
+            cell_indices = torch.multinomial(probs, num_samples, replacement=True)
+
+            # Convert to 3D indices
+            x_idx = cell_indices // (self.grid_resolution ** 2)
+            y_idx = (cell_indices // self.grid_resolution) % self.grid_resolution
+            z_idx = cell_indices % self.grid_resolution
+
+            # Random offset within each cell
+            offsets = torch.rand(num_samples, 3, device=self.device)
+
+            # Convert to world coordinates
+            cell_coords = torch.stack([x_idx, y_idx, z_idx], dim=-1).float()
+            points = (cell_coords + offsets) * self.cell_size + self.bounds[0]
+
+            all_samples.append(points)
+
+        return torch.stack(all_samples, dim=0)
+
+    def get_error_heatmap(self, axis: int = 2) -> torch.Tensor:
+        """
+        Get 2D heatmap of errors by averaging along an axis.
+
+        Args:
+            axis: Axis to average along (0=x, 1=y, 2=z)
+
+        Returns:
+            2D error heatmap
+        """
+        return self.error_grid.mean(dim=axis)
+
+    def reset(self):
+        """Reset error grid to uniform."""
+        self.error_grid.fill_(1.0)
+        self._update_count = 0
+        self._total_samples = 0
+
+
+# Import numpy for curriculum sampler's cosine schedule
+import numpy as np

@@ -300,7 +300,22 @@ class Motor:
         """
         Compose two motors: M_combined = self * other
 
-        This represents applying 'other' first, then 'self'.
+        When applying M_combined to a point via the sandwich product:
+            M_combined * P * ~M_combined = (self * other) * P * ~(self * other)
+                                        = self * other * P * ~other * ~self
+
+        This means 'other' is applied first (closest to P), then 'self'.
+
+        Example:
+            If T is a translation and R is a rotation:
+            - T.compose(R) applies R first, then T (rotate then translate)
+            - R.compose(T) applies T first, then R (translate then rotate)
+
+        Args:
+            other: The motor to compose with (applied first).
+
+        Returns:
+            The composed motor representing the sequential transformation.
         """
         return Motor(multivector=self._mv * other._mv)
 
