@@ -6,4 +6,6 @@ Observer-independent implicit neural representations using pga for coordinate fr
 
 Example 02 shows weight-space translation, rotation, scaling and morphing
 
-![Dynamic Scene Composition](output/09_dynamic_scene.gif)
+![weight space manip](output/02_csg_operations.gif)
+![weight space manip](output/02_morph_box_sphere.gif)
+![weight space manip](output/02_transform_box.gif)
